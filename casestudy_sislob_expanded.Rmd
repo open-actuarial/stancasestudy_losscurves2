@@ -1,0 +1,149 @@
+---
+title: "Loss Curves in Insurance: Extending the Single Insurer, Single Line-of-Business Model"
+author: "Mick Cooney <mickcooney@gmail.com>"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    fig_caption: yes
+    theme: cerulean
+  pdf_document: default
+---
+
+```{r knit_opts, include = FALSE}
+knitr::opts_chunk$set(tidy  = FALSE
+                     ,cache = FALSE
+                     ,message = FALSE
+                     ,warning = FALSE
+                     ,fig.height =  8
+                     ,fig.width  = 11)
+
+library(tidyverse)
+library(scales)
+library(rstan)
+library(bayesplot)
+library(cowplot)
+
+
+options(width = 80L
+       ,warn  = 1
+       ,mc.cores = parallel::detectCores()
+        )
+
+rstan_options(auto_write = TRUE)
+theme_set(theme_cowplot())
+
+set.seed(42)
+stan_seed <- 42
+
+source("custom_functions.R")
+```
+
+
+
+---
+
+# Introduction
+
+# Load Data
+
+As in the first case study, we first load up and convert the Schedule P data.
+
+```{r load_data, echo=TRUE}
+### File was downloaded from http://www.casact.org/research/reserve_data/ppauto_pos.csv
+data_files <- dir("data", pattern = "\\.csv", full.names = TRUE)
+
+data_cols <- cols(GRCODE = col_character())
+
+claimdata_tbl <- data_files %>%
+    map(read_claim_datafile, col_type = data_cols) %>%
+    bind_rows
+
+claimdata_tbl %>% glimpse
+
+claimdata_tbl %>% print
+```
+
+
+As before, we filter out the 'PPAuto' data nad select a single insurer:
+GRCODE 353
+
+
+```{r setup_data, echo=TRUE}
+modeldata_tbl <- claimdata_tbl %>%
+    filter(lob == 'ppauto', grcode == '43')
+
+usedata_tbl <- modeldata_tbl %>%
+    filter(developmentyear < 1998)
+
+cohort_maxtime <- usedata_tbl %>%
+    group_by(accidentyear) %>%
+    summarise(maxtime = max(developmentlag)) %>%
+    arrange(accidentyear) %>%
+    pull(maxtime)
+
+cohort_premium <- usedata_tbl %>%
+    group_by(accidentyear) %>%
+    summarise(premium = unique(earnedpremdir)) %>%
+    pull(premium)
+
+t_values <- usedata_tbl %>%
+    select(developmentlag) %>%
+    arrange(developmentlag) %>%
+    unique %>%
+    pull(developmentlag)
+
+standata_lst <- list(
+    growthmodel_id = 1   # Use weibull rather than loglogistic
+   ,n_data         = usedata_tbl %>% nrow
+   ,n_time         = usedata_tbl %>% select(developmentlag)  %>% unique %>% nrow
+   ,n_cohort       = usedata_tbl %>% select(accidentyear)    %>% unique %>% nrow
+   ,cohort_id      = get_character_index(usedata_tbl$accidentyear)
+   ,cohort_maxtime = cohort_maxtime
+   ,t_value        = t_values
+   ,t_idx          = get_character_index(usedata_tbl$developmentlag)
+   ,premium        = cohort_premium
+   ,loss           = usedata_tbl$cumpaidloss
+)
+```
+
+
+# Scale Noise Around Mean
+
+```{r model_scalenoise_stanmodel, results='hide'}
+stan_file <- 'losscurves_sislob_scalenoise.stan'
+
+model_scalenoise_stanmodel <- stan_model(stan_file)
+```
+
+```{r model_scalenoise_stanfit, results='hide'}
+model_scalenoise_stanfit <- sampling(
+    object  = model_scalenoise_stanmodel
+   ,data    = standata_lst
+   ,iter    = 500
+   ,chains  = 8
+   ,seed    = stan_seed
+)
+```
+
+
+# Add Variance-Decay
+
+```{r model_decayvar_stanmodel, results='hide'}
+# stan_file <- 'losscurves_sislob_decayvar.stan'
+# 
+# model_decayvar_stanmodel <- stan_model(stan_file)
+```
+
+```{r model_decayvar_stanfit, results='hide'}
+# model_decayvar_stanfit <- sampling(
+#     object  = model_decayvar_stanmodel
+#    ,data    = standata_lst
+#    ,iter    = 500
+#    ,chains  = 8
+#    ,seed    = stan_seed
+# )
+```
+
+
